@@ -2,6 +2,7 @@ import type { FetchLike, JSONRPCMessage, Transport } from '@modelcontextprotocol
 import {
     brandedHasInstance,
     createFetchWithInit,
+    defaultParseJson,
     fetchLeavingRedirects,
     fetchWithinOrigin,
     JSONRPCMessageSchema,
@@ -145,6 +146,23 @@ export type SSEClientTransportOptions = {
      * @default 'same-origin'
      */
     redirectPolicy?: 'same-origin' | 'follow';
+
+    /**
+     * Custom JSON parser used to decode incoming JSON-RPC messages (SSE
+     * message events) instead of `JSON.parse`. Use it to decode numbers
+     * exactly (e.g. `parseExactJson`, or a `JSON.parse` reviver with
+     * `context.source`, or a lossless-json parser) — plain `JSON.parse` rounds
+     * integer tokens above `Number.MAX_SAFE_INTEGER` (issue #3150).
+     */
+    parseJson?: (text: string) => unknown;
+
+    /**
+     * Custom JSON stringifier used to encode outgoing JSON-RPC messages
+     * instead of `JSON.stringify` (e.g. `stringifyExactJson`, or a
+     * lossless-json encoder) so exact values round-trip in requests
+     * (issue #3150).
+     */
+    stringifyJson?: (value: unknown) => string;
 };
 
 /**
@@ -169,6 +187,8 @@ export class SSEClientTransport implements Transport {
     private _redirectPolicy?: 'same-origin' | 'follow';
     private _dpop?: Middleware;
     private _protocolVersion?: string;
+    private _parseJson?: (text: string) => unknown;
+    private _stringifyJson?: (value: unknown) => string;
 
     onclose?: () => void;
     onerror?: (error: Error) => void;
@@ -200,6 +220,8 @@ export class SSEClientTransport implements Transport {
         this._redirectPolicy = opts?.redirectPolicy;
         this._fetchWithInit = createFetchWithInit(opts?.fetch, opts?.requestInit);
         if (this._redirectPolicy === 'follow') this._fetchWithInit = fetchLeavingRedirects(this._fetchWithInit);
+        this._parseJson = opts?.parseJson;
+        this._stringifyJson = opts?.stringifyJson;
     }
 
     private _last401Response?: Response;
@@ -353,7 +375,7 @@ export class SSEClientTransport implements Transport {
                 const messageEvent = event as MessageEvent;
                 let message: JSONRPCMessage;
                 try {
-                    message = JSONRPCMessageSchema.parse(JSON.parse(messageEvent.data));
+                    message = JSONRPCMessageSchema.parse((this._parseJson ?? defaultParseJson)(messageEvent.data));
                 } catch (error) {
                     this.onerror?.(error as Error);
                     return;
@@ -443,7 +465,7 @@ export class SSEClientTransport implements Transport {
                 ...this._requestInit,
                 method: 'POST',
                 headers,
-                body: JSON.stringify(message),
+                body: (this._stringifyJson ?? JSON.stringify)(message),
                 signal: this._abortController?.signal
             };
 

@@ -46,6 +46,23 @@ export type StdioServerParameters = {
      * Defaults to 10 MB.
      */
     maxBufferSize?: number;
+
+    /**
+     * Custom JSON parser used to decode incoming JSON-RPC messages instead of
+     * `JSON.parse`. Use it to decode numbers exactly (e.g. `parseExactJson`,
+     * or a `JSON.parse` reviver with `context.source`, or a lossless-json
+     * parser) — plain `JSON.parse` rounds integer tokens above
+     * `Number.MAX_SAFE_INTEGER` (issue #3150).
+     */
+    parseJson?: (text: string) => unknown;
+
+    /**
+     * Custom JSON stringifier used to encode outgoing JSON-RPC messages
+     * instead of `JSON.stringify` (e.g. `stringifyExactJson`, or a
+     * lossless-json encoder) so exact values round-trip in requests
+     * (issue #3150).
+     */
+    stringifyJson?: (value: unknown) => string;
 };
 
 /**
@@ -116,7 +133,7 @@ export class StdioClientTransport implements Transport {
 
     constructor(server: StdioServerParameters) {
         this._serverParams = server;
-        this._readBuffer = new ReadBuffer({ maxBufferSize: server.maxBufferSize });
+        this._readBuffer = new ReadBuffer({ maxBufferSize: server.maxBufferSize, parseJson: server.parseJson });
         if (server.stderr === 'pipe' || server.stderr === 'overlapped') {
             this._stderrStream = new PassThrough();
         }
@@ -324,7 +341,7 @@ export class StdioClientTransport implements Transport {
                 throw new SdkError(SdkErrorCode.NotConnected, 'Not connected');
             }
 
-            const json = serializeMessage(message);
+            const json = serializeMessage(message, { stringifyJson: this._serverParams.stringifyJson });
             if (this._process.stdin.write(json)) {
                 resolve();
             } else {

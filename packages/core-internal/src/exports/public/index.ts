@@ -62,6 +62,11 @@ export { DEFAULT_REQUEST_TIMEOUT_MSEC, mergeCapabilities, Protocol } from '../..
 // stdio message framing utilities (for custom transport authors)
 export { deserializeMessage, ReadBuffer, serializeMessage, STDIO_DEFAULT_MAX_BUFFER_SIZE } from '../../shared/stdio';
 
+// Exact-number JSON codecs: the parseJson/stringifyJson hook implementations
+// for message decoding/encoding that preserves integers beyond
+// Number.MAX_SAFE_INTEGER (see deserializeMessage's options).
+export { parseExactJson, stringifyExactJson } from '../../shared/exactJson';
+
 // Transport types (NOT normalizeHeaders)
 export type { FetchLike, Transport, TransportSendOptions } from '../../shared/transport';
 export { createFetchWithInit } from '../../shared/transport';

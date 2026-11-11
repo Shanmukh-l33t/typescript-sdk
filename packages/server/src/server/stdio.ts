@@ -36,6 +36,7 @@ export class StdioServerTransport implements Transport {
     private _readBuffer: ReadBuffer;
     private _started = false;
     private _closed = false;
+    private _stringifyJson?: (value: unknown) => string;
 
     constructor(
         private _stdin: Readable = process.stdin,
@@ -48,9 +49,27 @@ export class StdioServerTransport implements Transport {
              * Defaults to 10 MB.
              */
             maxBufferSize?: number;
+
+            /**
+             * Custom JSON parser used to decode incoming JSON-RPC messages
+             * instead of `JSON.parse`. Use it to decode numbers exactly (e.g.
+             * `parseExactJson`, or a `JSON.parse` reviver with `context.source`,
+             * or a lossless-json parser) — plain `JSON.parse` rounds integer
+             * tokens above `Number.MAX_SAFE_INTEGER` (issue #3150).
+             */
+            parseJson?: (text: string) => unknown;
+
+            /**
+             * Custom JSON stringifier used to encode outgoing JSON-RPC
+             * messages instead of `JSON.stringify` (e.g. `stringifyExactJson`,
+             * or a lossless-json encoder) so exact values round-trip in
+             * responses (issue #3150).
+             */
+            stringifyJson?: (value: unknown) => string;
         }
     ) {
-        this._readBuffer = new ReadBuffer({ maxBufferSize: options?.maxBufferSize });
+        this._readBuffer = new ReadBuffer({ maxBufferSize: options?.maxBufferSize, parseJson: options?.parseJson });
+        this._stringifyJson = options?.stringifyJson;
     }
 
     onclose?: () => void;
@@ -188,7 +207,7 @@ export class StdioServerTransport implements Transport {
             return Promise.reject(new Error('StdioServerTransport is closed'));
         }
         return new Promise((resolve, reject) => {
-            const json = serializeMessage(message);
+            const json = serializeMessage(message, { stringifyJson: this._stringifyJson });
 
             let settled = false;
             const onError = (error: Error) => {

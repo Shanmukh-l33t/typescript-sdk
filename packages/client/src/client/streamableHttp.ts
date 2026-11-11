@@ -3,6 +3,7 @@ import type { ReadableWritablePair } from 'node:stream/web';
 import type { FetchLike, JSONRPCMessage, Transport } from '@modelcontextprotocol/core-internal';
 import {
     createFetchWithInit,
+    defaultParseJson,
     encodeMcpParamValue,
     fetchLeavingRedirects,
     fetchWithinOrigin,
@@ -278,6 +279,23 @@ export type StreamableHTTPClientTransportOptions = {
      * @default 1
      */
     maxStepUpRetries?: number;
+
+    /**
+     * Custom JSON parser used to decode incoming JSON-RPC messages (SSE event
+     * data and JSON response bodies) instead of `JSON.parse`. Use it to decode
+     * numbers exactly (e.g. `parseExactJson`, or a `JSON.parse` reviver with
+     * `context.source`, or a lossless-json parser) — plain `JSON.parse` rounds
+     * integer tokens above `Number.MAX_SAFE_INTEGER` (issue #3150).
+     */
+    parseJson?: (text: string) => unknown;
+
+    /**
+     * Custom JSON stringifier used to encode outgoing JSON-RPC messages
+     * instead of `JSON.stringify` (e.g. `stringifyExactJson`, or a
+     * lossless-json encoder) so exact values round-trip in requests
+     * (issue #3150).
+     */
+    stringifyJson?: (value: unknown) => string;
 };
 
 /**
@@ -357,6 +375,8 @@ export class StreamableHTTPClientTransport implements Transport {
     private _protocolVersion?: string;
     private _onInsufficientScope: 'reauthorize' | 'throw';
     private _maxStepUpRetries: number;
+    private _parseJson?: (text: string) => unknown;
+    private _stringifyJson?: (value: unknown) => string;
     private _serverRetryMs?: number; // Server-provided retry delay from SSE retry field
     private readonly _reconnectionScheduler?: ReconnectionScheduler;
     private _cancelReconnection?: () => void;
@@ -404,6 +424,8 @@ export class StreamableHTTPClientTransport implements Transport {
         this._reconnectionScheduler = opts?.reconnectionScheduler;
         this._onInsufficientScope = opts?.onInsufficientScope ?? 'reauthorize';
         this._maxStepUpRetries = Math.max(0, opts?.maxStepUpRetries ?? DEFAULT_MAX_STEP_UP_RETRIES);
+        this._parseJson = opts?.parseJson;
+        this._stringifyJson = opts?.stringifyJson;
     }
 
     /**
@@ -822,7 +844,7 @@ export class StreamableHTTPClientTransport implements Transport {
 
                     if (!event.event || event.event === 'message') {
                         try {
-                            const message = JSONRPCMessageSchema.parse(JSON.parse(event.data));
+                            const message = JSONRPCMessageSchema.parse((this._parseJson ?? defaultParseJson)(event.data));
                             // Handle both success AND error responses for completion detection and ID remapping
                             if (isJSONRPCResultResponse(message) || isJSONRPCErrorResponse(message)) {
                                 // Mark that we received a response - no need to reconnect for this request
@@ -1056,7 +1078,7 @@ export class StreamableHTTPClientTransport implements Transport {
                 ...this._requestInit,
                 method: 'POST',
                 headers,
-                body: JSON.stringify(message),
+                body: (this._stringifyJson ?? JSON.stringify)(message),
                 signal
             };
 
@@ -1143,7 +1165,7 @@ export class StreamableHTTPClientTransport implements Transport {
                 // not silently stop matching.
                 if (response.status === 400 && typeof text === 'string' && this._isModernEnvelopedRequest(message)) {
                     try {
-                        const parsed = JSONRPCMessageSchema.parse(JSON.parse(text));
+                        const parsed = JSONRPCMessageSchema.parse((this._parseJson ?? defaultParseJson)(text));
                         const requests = (Array.isArray(message) ? message : [message]).filter(m => isJSONRPCRequest(m));
                         if (isJSONRPCErrorResponse(parsed) && requests.some(r => r.id === parsed.id)) {
                             this.onmessage?.(parsed);
@@ -1198,8 +1220,12 @@ export class StreamableHTTPClientTransport implements Transport {
                         false
                     );
                 } else if (responseMediaType === 'application/json') {
-                    // For non-streaming servers, we might get direct JSON responses
-                    const data = await response.json();
+                    // For non-streaming servers, we might get direct JSON responses.
+                    // Decode the body text through the transport's parseJson hook
+                    // (issue #3150); fall back to response.json() for Response
+                    // shims that do not implement text().
+                    const text = typeof response.text === 'function' ? await response.text() : null;
+                    const data = typeof text === 'string' ? (this._parseJson ?? defaultParseJson)(text) : await response.json();
                     const responseMessages = Array.isArray(data)
                         ? data.map(msg => JSONRPCMessageSchema.parse(msg))
                         : [JSONRPCMessageSchema.parse(data)];
